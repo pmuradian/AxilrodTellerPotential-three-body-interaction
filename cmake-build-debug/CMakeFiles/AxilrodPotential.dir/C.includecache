@@ -1,0 +1,26 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/Users/azazel/Documents/Projects/MIMUW/AxilrodPotential/main.c
+stdio.h
+-
+math.h
+-
+unistd.h
+-
+string.h
+-
+stdint.h
+-
+mpi.h
+-
+stdlib.h
+-
+assert.h
+-
+

@@ -1,0 +1,3 @@
+/Users/azazel/Documents/Projects/MIMUW/AxilrodPotential/cmake-build-debug/CMakeFiles/rebuild_cache.dir
+/Users/azazel/Documents/Projects/MIMUW/AxilrodPotential/cmake-build-debug/CMakeFiles/edit_cache.dir
+/Users/azazel/Documents/Projects/MIMUW/AxilrodPotential/cmake-build-debug/CMakeFiles/AxilrodPotential.dir
