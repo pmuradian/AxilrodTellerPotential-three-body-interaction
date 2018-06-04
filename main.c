@@ -402,11 +402,11 @@ double* calculate_interactions(double *b0, double *b1, double *b2, int buffer_si
         free(new_b);
     }
 
-    // sum acceleration for particles
+    // sum accelerations for particles
     for (int i = 0; i < particles_per_process; i++) {
-        b[0][6 + i * size_of_particle] += b[1][6 + i * size_of_particle] + b[2][6 + i * size_of_particle];
-        b[0][7 + i * size_of_particle] += b[1][7 + i * size_of_particle] + b[2][7 + i * size_of_particle];
-        b[0][8 + i * size_of_particle] += b[1][8 + i * size_of_particle] + b[2][8 + i * size_of_particle];
+        b[0][6 + i * size_of_particle] += b[1][6 + i * size_of_particle] + b[2][6 + i * size_of_particle]; // a_x
+        b[0][7 + i * size_of_particle] += b[1][7 + i * size_of_particle] + b[2][7 + i * size_of_particle]; // a_y
+        b[0][8 + i * size_of_particle] += b[1][8 + i * size_of_particle] + b[2][8 + i * size_of_particle]; // a_z
     }
 
     // update positions
@@ -533,14 +533,17 @@ int main(int argc, char *argv[]) {
         step++;
 
         if (verbose) {
-            strcat(output_file, "_step_");
-            strcat(output_file, step +'0');
-            printf("%s", output_file);
-            fflush(stdout);
-            strcat(output_file, "_rank_");
-            strcat(output_file, myRank + '0');
-
-            output_to_file(output_file, b1, buffer_size, size_of_particle);
+            // create local output filename
+            char tmp[80];
+            strcpy(tmp, output_file);
+            strcat(tmp, "_step_");
+            char integer_string[32];
+            sprintf(integer_string, "%d", step);
+            strcat(tmp, integer_string);
+            strcat(tmp, "_rank_");
+            sprintf(integer_string, "%d", myRank);
+            strcat(tmp, integer_string);
+            output_to_file(tmp, b1, buffer_size, size_of_particle);
         }
     }
 
