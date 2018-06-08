@@ -1,12 +1,15 @@
-CC=mpicc
+CC=cc
 CFLAGS=\-o
 EXEC=mpiexec
 
 build: main.c
-	$(CC) $(CFLAGS) body3 main.c
+	$(CC) -o3 $(CFLAGS) body3 main.c
+
+buildlocal: main.c
+	mpicc $(CFLAGS) body3 main.c
 
 clean:
 	rm body3
 
-execute: build
-	$(EXEC) -n 4 ./body3 ./input.txt ./particles_out 1 0.5 -v
+execute: buildlocal
+	$(EXEC) -n 4 ./body3 ./input.txt ./particles_out 5 0.5 -v

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <mpi.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #define PARTICLE_SIZE 13
 
@@ -177,6 +178,7 @@ void calculate_forces(Particle *p_0, Particle *p_1, Particle *p_2, int p0_size, 
                     p1.a_x += f1;
                     p1.a_y += f2;
                     p1.a_z += f3;
+                    printf("%f ", p1.a_x);
                 } else {
                     p1.delta_a_x += f1;
                     p1.delta_a_y += f2;
@@ -242,11 +244,18 @@ int prev_rank(int rank, int count) {
 }
 
 void shift_right(double *new_particles, double *particles, int count, int rank, int num_proc) {
-    MPI_Request request = MPI_REQUEST_NULL;
     MPI_Barrier(MPI_COMM_WORLD);
 
-    MPI_Isend(particles, count, MPI_DOUBLE, next_rank(rank, num_proc), 0, MPI_COMM_WORLD, &request);
-    MPI_Recv(new_particles, count, MPI_DOUBLE, prev_rank(rank, num_proc), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    if (rank % 2 == 0) {
+        MPI_Send(particles, count, MPI_DOUBLE, next_rank(rank, num_proc), 0, MPI_COMM_WORLD);
+        MPI_Recv(new_particles, count, MPI_DOUBLE, prev_rank(rank, num_proc), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    } else {
+        MPI_Recv(new_particles, count, MPI_DOUBLE, prev_rank(rank, num_proc), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Send(particles, count, MPI_DOUBLE, next_rank(rank, num_proc), 0, MPI_COMM_WORLD);
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    memcpy(particles, new_particles, sizeof(double) * count);
 }
 
 void print_buffer(double *buffer, int size) {
@@ -256,8 +265,8 @@ void print_buffer(double *buffer, int size) {
 }
 
 void buffer_to_particles(double *buffer, Particle *particles, int buffer_size, int particle_size) {
+    double values[particle_size];
     for (int i = 0; i < buffer_size; i++) {
-        double values[particle_size];
         for (int j = 0; j < particle_size; j++) {
             values[j] = buffer[i * particle_size + j];
         }
@@ -269,7 +278,7 @@ void buffer_to_particles(double *buffer, Particle *particles, int buffer_size, i
 
 void buffer_from_particles(double *buffer, Particle *particles, int particle_cnt, int size_of_particle) {
     int index = 0;
-    double *message = malloc(size_of_particle * sizeof(double));
+    double message[size_of_particle];
 
     // populate buffer with particles
     for (int i = 0; i < particle_cnt; i++) {
@@ -279,24 +288,12 @@ void buffer_from_particles(double *buffer, Particle *particles, int particle_cnt
         }
         index++;
     }
-    free(message);
 }
 
 void swap(int *a, int *b) {
     int temp = *b;
     *b = *a;
     *a = temp;
-}
-
-int sort_and_concat(int a, int b, int c) {
-    if (a > c)
-        swap(&a, &c);
-    if (a > b)
-        swap(&a, &b);
-    if (b > c)
-        swap(&b, &c);
-
-    return c * 100 + b * 10 + a;
 }
 
 // 3 body interaction algorithm
@@ -331,20 +328,13 @@ void calculate_interactions(double *b0, double *b1, double *b2, int buffer_size,
     // buffer to process mapping, so it can be used later to send buffers to original processes
     int buffer_to_rank[3] = {prev_rank(rank, numProcesses), rank, next_rank(rank, numProcesses)};
     int my_buffer_location = rank;
-
-//    int calculated_buffers[1000] = { -1 };
-//    int max_index = 0;
+    double new_b[buffer_size];
 
     for (int i = numProcesses; i > 0; i -= 3) {
         for (int j = 0; j < i; j++) {
-//            int *selected_buffers = malloc(sizeof(int) * numProcesses);
-
             if (j != 0 || j != numProcesses - 3) {
                 // shift buffer
-                double *new_b = malloc(sizeof(double) * buffer_size);
                 shift_right(new_b, b[buf_index], buffer_size, rank, numProcesses);
-                memcpy(b[buf_index], new_b, sizeof(double) * buffer_size);
-                free(new_b);
                 // set new particles
                 buffer_to_particles(b[buf_index], p[buf_index], particles_per_process, size_of_particle);
                 // update buffer to process mapping
@@ -352,7 +342,6 @@ void calculate_interactions(double *b0, double *b1, double *b2, int buffer_size,
                 if (buf_index == 1) {
                     my_buffer_location = next_rank(my_buffer_location, numProcesses);
                 }
-
             }
             else {
                 calculate_forces(p[1], p[1], p[1], particles_per_process, particles_per_process, particles_per_process, round);
@@ -365,18 +354,12 @@ void calculate_interactions(double *b0, double *b1, double *b2, int buffer_size,
             }
             calculate_forces(p[0], p[1], p[2], particles_per_process, particles_per_process, particles_per_process, round);
         }
-
         buf_index = (buf_index + 1) % 3;
     }
 
     if (numProcesses % 3 == 0) {
-        printf("shifting 1");
         // shift buffer
-        double *new_b = malloc(sizeof(double) * buffer_size);
         shift_right(new_b, b[buf_index], buffer_size, rank, numProcesses);
-        memcpy(b[buf_index], new_b, sizeof(double) * buffer_size);
-        free(new_b);
-
         // set new particles
         buffer_to_particles(b[buf_index], p[buf_index], particles_per_process, size_of_particle);
         // update buffer to process mapping
@@ -389,40 +372,45 @@ void calculate_interactions(double *b0, double *b1, double *b2, int buffer_size,
 
     MPI_Request request = MPI_REQUEST_NULL;
 
-
     for (int i = 0; i < 3; i++) {
         // update buffer values from calculated particles
         buffer_from_particles(b[i], p[i], particles_per_process, size_of_particle);
 
-        // send buffers to initial processes
         MPI_Isend(b[i], buffer_size, MPI_DOUBLE, buffer_to_rank[i], 0, MPI_COMM_WORLD, &request);
-        double *new_b = malloc(sizeof(double) * buffer_size);
         MPI_Recv(new_b, buffer_size, MPI_DOUBLE, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         memcpy(b[i], new_b, sizeof(double) * buffer_size);
-        free(new_b);
     }
 
     // sum accelerations for particles
     for (int i = 0; i < particles_per_process; i++) {
-        b[1][6 + i * size_of_particle] += b[0][6 + i * size_of_particle] + b[2][6 + i * size_of_particle]; // a_x
-        b[1][7 + i * size_of_particle] += b[0][7 + i * size_of_particle] + b[2][7 + i * size_of_particle]; // a_y
-        b[1][8 + i * size_of_particle] += b[0][8 + i * size_of_particle] + b[2][8 + i * size_of_particle]; // a_z
+        int index_of_a_x = 6 + i * size_of_particle;
+        int index_of_a_y = 7 + i * size_of_particle;
+        int index_of_a_z = 8 + i * size_of_particle;
+        b[1][index_of_a_x] += b[0][index_of_a_x] + b[2][index_of_a_x]; // a_x
+        b[1][index_of_a_y] += b[0][index_of_a_y] + b[2][index_of_a_y]; // a_y
+        b[1][index_of_a_z] += b[0][index_of_a_z] + b[2][index_of_a_z]; // a_z
     }
 
     // update positions
     populate(p[0], b[1]);
 
     if (round == 0) {
+        Particle *par = p[0];
         for (int i = 0; i < particles_per_process; i++) {
-            p[0][i].x = coordinate_change(p[0][i].x, p[0][i].vel_x, p[0][i].a_x, time);
-            p[0][i].y = coordinate_change(p[0][i].y, p[0][i].vel_y, p[0][i].a_y, time);
-            p[0][i].z = coordinate_change(p[0][i].z, p[0][i].vel_z, p[0][i].a_z, time);
+            Particle ptc = par[i];
+            ptc.x = coordinate_change(ptc.x, ptc.vel_x, ptc.a_x, time);
+            ptc.y = coordinate_change(ptc.y, ptc.vel_y, ptc.a_y, time);
+            ptc.z = coordinate_change(ptc.z, ptc.vel_z, ptc.a_z, time);
+            par[i] = ptc;
         }
     } else {
+        Particle *par = p[0];
         for (int i = 0; i < particles_per_process; i++) {
-            p[0][i].vel_x = velocity_change(p[0][i].vel_x, p[0][i].a_x, p[0][i].delta_a_x, time);
-            p[0][i].vel_y = velocity_change(p[0][i].vel_y, p[0][i].a_y, p[0][i].delta_a_y, time);
-            p[0][i].vel_z = velocity_change(p[0][i].vel_z, p[0][i].a_z, p[0][i].delta_a_z, time);
+            Particle ptc = par[i];
+            ptc.vel_x = velocity_change(ptc.vel_x, ptc.a_x, ptc.delta_a_x, time);
+            ptc.vel_y = velocity_change(ptc.vel_y, ptc.a_y, ptc.delta_a_y, time);
+            ptc.vel_z = velocity_change(ptc.vel_z, ptc.a_z, ptc.delta_a_z, time);
+            par[i] = ptc;
         }
     }
 
@@ -446,13 +434,25 @@ void output_to_file(char * path, double *values, int size, int particle_size) {
     fclose(f);
 }
 
+void temp_file_name(char *final, char *original, int rank, int step) {
+    strcpy(final, original);
+    strcat(final, "_step_");
+    char integer_string[32];
+    sprintf(integer_string, "%d", step);
+    strcat(final, integer_string);
+    strcat(final, "_rank_");
+    sprintf(integer_string, "%d", rank);
+    strcat(final, integer_string);
+    strcat(final, ".txt");
+}
+
 int main(int argc, char *argv[]) {
 
-    int step_count = 1;
+    int step_count = 0;
     int verbose = 0;
     char output_file[80];
     char input_file[80];
-    double time_interval = 0.5;
+    double time_interval = 0;
 
     if (argc >= 5) {
         strcpy(input_file, argv[1]);
@@ -468,11 +468,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    MPI_Init(&argc, &argv);
-
     int numProcesses, myRank;
-    MPI_Comm_size(MPI_COMM_WORLD, &numProcesses);
-    MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
     double *b0;
     double *b1;
     double *b2;
@@ -482,6 +478,10 @@ int main(int argc, char *argv[]) {
     int particle_cnt = 0;
     int buffer_size = 0;
     Particle *particles;
+
+    MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &numProcesses);
+    MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
 
     // initialize particles from input file
     if (myRank == 0) {
@@ -508,60 +508,59 @@ int main(int argc, char *argv[]) {
     // scatter particles to processes
     MPI_Scatter(buffer, buffer_size, MPI_DOUBLE, b1, buffer_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-    free(buffer);
-
     int step = 0;
     while (step < step_count) {
 
         for (int i = 0; i < 2; i++) {
             // for i = 0 update coordinates
             // for i = 1 update velocities
-            MPI_Request request = MPI_REQUEST_NULL;
+
+            MPI_Barrier(MPI_COMM_WORLD);
             // send buffer to neighbors
-            MPI_Isend(b1, buffer_size, MPI_DOUBLE, prev_rank(myRank, numProcesses), 0, MPI_COMM_WORLD, &request);
-            MPI_Isend(b1, buffer_size, MPI_DOUBLE, next_rank(myRank, numProcesses), 0, MPI_COMM_WORLD, &request);
+            if (myRank % 2 == 0) {
+                MPI_Send(b1, buffer_size, MPI_DOUBLE, prev_rank(myRank, numProcesses), 0, MPI_COMM_WORLD);
+                MPI_Send(b1, buffer_size, MPI_DOUBLE, next_rank(myRank, numProcesses), 0, MPI_COMM_WORLD);
 
-            // receive buffers from neighbors
-            MPI_Recv(b0, buffer_size, MPI_DOUBLE, prev_rank(myRank, numProcesses), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            MPI_Recv(b2, buffer_size, MPI_DOUBLE, next_rank(myRank, numProcesses), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            calculate_interactions(b0, b1, b2, buffer_size, size_of_particle, particles_per_process, numProcesses, myRank, time_interval, i);
-
-            if (myRank == 0) {
-                print_buffer(b1, buffer_size);
+                MPI_Recv(b0, buffer_size, MPI_DOUBLE, prev_rank(myRank, numProcesses), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                MPI_Recv(b2, buffer_size, MPI_DOUBLE, next_rank(myRank, numProcesses), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             }
+            else {
+                MPI_Recv(b2, buffer_size, MPI_DOUBLE, next_rank(myRank, numProcesses), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                MPI_Recv(b0, buffer_size, MPI_DOUBLE, prev_rank(myRank, numProcesses), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+                MPI_Send(b1, buffer_size, MPI_DOUBLE, next_rank(myRank, numProcesses), 0, MPI_COMM_WORLD);
+                MPI_Send(b1, buffer_size, MPI_DOUBLE, prev_rank(myRank, numProcesses), 0, MPI_COMM_WORLD);
+            }
+
+            calculate_interactions(b0, b1, b2, buffer_size, size_of_particle, particles_per_process, numProcesses, myRank, time_interval, i);
         }
         step++;
 
         if (verbose) {
             // create local output filename
             char tmp[80];
-            strcpy(tmp, output_file);
-            strcat(tmp, "_step_");
-            char integer_string[32];
-            sprintf(integer_string, "%d", step);
-            strcat(tmp, integer_string);
-            strcat(tmp, "_rank_");
-            sprintf(integer_string, "%d", myRank);
-            strcat(tmp, integer_string);
-            strcat(tmp, ".txt");
+            temp_file_name(tmp, output_file, myRank, step);
             output_to_file(tmp, b1, buffer_size, size_of_particle);
         }
     }
 
-    double *final_buffer;
-    if (myRank == 0)
-        final_buffer = malloc(sizeof(double) * particle_cnt);
-
-    MPI_Barrier(MPI_COMM_WORLD);
-    // does not work correctly on my machine, only b1 from rank 0 is gathered, the rest are zeros
-    MPI_Gather(b1, buffer_size, MPI_DOUBLE, final_buffer, buffer_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    // does not work correctly, only b1 from rank 0 is gathered, the rest are zeros
+    MPI_Gather(b1, buffer_size, MPI_DOUBLE, buffer, buffer_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     if (myRank == 0) {
         strcat(output_file, "_stepcount.txt");
-        output_to_file(output_file, final_buffer, buffer_size * numProcesses, size_of_particle);
+        output_to_file(output_file, buffer, particle_cnt * size_of_particle, size_of_particle);
     }
 
-    printf("finilize in rank %d\n", myRank);
+    if (myRank == 0) {
+        free(buffer);
+    }
+
+    free(b0);
+    free(b1);
+    free(b2);
+
+    printf("finalize in rank %d\n", myRank);
     fflush(stdout);
 
     MPI_Finalize();
