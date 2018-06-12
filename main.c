@@ -97,6 +97,8 @@ double axilrod_teller_potential(double r1, double r2, double r3) {
     double b = 3 * (-1 * p_r1 + p_r2 + p_r3) * (p_r1 - p_r2 + p_r3) * (p_r1 + p_r2 - p_r3);
     double c = 8 * pow(r1 * r2 * r3, 5);
 
+//    printf("%.8f ", E * (a + b / c));
+
     return E * (a + b / c);
 }
 
@@ -154,7 +156,7 @@ double velocity_change(double vel, double a, double d_a, double t) {
     return vel + ((a + d_a) * t) / 2;
 }
 
-void calculate_forces(Particle *p_0, Particle *p_1, Particle *p_2, int p0_size, int p1_size, int p2_size, int round) {
+void calculate_forces(Particle *p_0, Particle *p_1, Particle *p_2, int p0_size, int p1_size, int p2_size, int round, int rank) {
 
     for (int i = 0; i < p1_size; i++) {
         Particle p1 = p_1[i];
@@ -178,13 +180,34 @@ void calculate_forces(Particle *p_0, Particle *p_1, Particle *p_2, int p0_size, 
                     p1.a_x += f1;
                     p1.a_y += f2;
                     p1.a_z += f3;
-                    printf("%f ", p1.a_x);
+                    p2.a_x += f1;
+                    p2.a_y += f2;
+                    p2.a_z += f3;
+                    p3.a_x += f1;
+                    p3.a_y += f2;
+                    p3.a_z += f3;
+                    printf("triple %d%d%d in rank %d\n", p1.id, p2.id, p3.id, rank);
+                    printf("coordinates %.15f%.15f%.15f in rank %d\n", p1.x, p2.x, p3.x, rank);
+                    printf("triple %.15f%.15f%.15f in rank %d\n", f1, f2, f3, rank);
+                    fflush(stdout);
                 } else {
                     p1.delta_a_x += f1;
                     p1.delta_a_y += f2;
                     p1.delta_a_y += f3;
+                    p2.delta_a_x += f1;
+                    p2.delta_a_y += f2;
+                    p2.delta_a_y += f3;
+                    p3.delta_a_x += f1;
+                    p3.delta_a_y += f2;
+                    p3.delta_a_y += f3;
                 }
                 must_update = 1;
+                if (must_update) {
+                    p_2[k] = p3;
+                }
+            }
+            if (must_update) {
+                p_0[j] = p2;
             }
         }
         if (must_update) {
@@ -296,6 +319,56 @@ void swap(int *a, int *b) {
     *a = temp;
 }
 
+int sort_and_concat(int a, int b, int c) {
+//    if (a > c)
+//        swap(&a, &c);
+//    if (a > b)
+//        swap(&a, &b);
+//    if (b > c)
+//        swap(&b, &c);
+
+    return a * 100 + b * 10 + c;
+}
+
+int check_if_calculated(int rank, int numProcesses, int *buffer_to_rank, int *triples, int *current_check_index) {
+    int skip_this_one = 0;
+    if (rank == 0) {
+        for (int i = 0; i < numProcesses; i++) {
+            int new_triple = 0;
+
+            if (i == 0) {
+                new_triple = sort_and_concat(buffer_to_rank[0], buffer_to_rank[1], buffer_to_rank[2]);
+            } else {
+                MPI_Recv(&new_triple, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            }
+
+            int k = 0;
+            for (k = 0; k < *current_check_index; k++) {
+//                printf("checking %d with %d\n", new_triple, triples[k]);
+                if (new_triple == triples[k]) {
+                    skip_this_one = 1;
+                    break;
+                }
+            }
+            if (!skip_this_one) {
+                triples[*current_check_index] = new_triple;
+                *current_check_index += 1;
+            }
+            if (i != 0) {
+                MPI_Send(&skip_this_one, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+            }
+
+            skip_this_one = 0;
+        }
+    } else {
+        int sorted_triple = sort_and_concat(buffer_to_rank[0], buffer_to_rank[1], buffer_to_rank[2]);
+        MPI_Send(&sorted_triple, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+        MPI_Recv(&skip_this_one, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    }
+
+    return skip_this_one;
+}
+
 // 3 body interaction algorithm
 void calculate_interactions(double *b0, double *b1, double *b2, int buffer_size, int size_of_particle, int particles_per_process, int numProcesses, int rank,
                             double time, int round) {
@@ -329,9 +402,16 @@ void calculate_interactions(double *b0, double *b1, double *b2, int buffer_size,
     int buffer_to_rank[3] = {prev_rank(rank, numProcesses), rank, next_rank(rank, numProcesses)};
     int my_buffer_location = rank;
     double new_b[buffer_size];
+    int *triples = malloc(sizeof(double) * 3 * numProcesses);
+    int current_check_index = 0;
 
-    for (int i = numProcesses; i > 0; i -= 3) {
+    for (int i = numProcesses - 3; i > 0; i -= 3) {
         for (int j = 0; j < i; j++) {
+            // check if buffer is already calculated
+//            int skip_this_one = check_if_calculated(rank, numProcesses, buffer_to_rank, triples, &current_check_index);
+
+            printf("rank %d has triplet %d\n", rank, sort_and_concat(buffer_to_rank[0], buffer_to_rank[1], buffer_to_rank[2]));
+
             if (j != 0 || j != numProcesses - 3) {
                 // shift buffer
                 shift_right(new_b, b[buf_index], buffer_size, rank, numProcesses);
@@ -344,16 +424,19 @@ void calculate_interactions(double *b0, double *b1, double *b2, int buffer_size,
                 }
             }
             else {
-                calculate_forces(p[1], p[1], p[1], particles_per_process, particles_per_process, particles_per_process, round);
-                calculate_forces(p[1], p[1], p[2], particles_per_process, particles_per_process, particles_per_process, round);
-                calculate_forces(p[0], p[0], p[2], particles_per_process, particles_per_process, particles_per_process, round);
+                calculate_forces(p[1], p[1], p[1], particles_per_process, particles_per_process, particles_per_process, round, rank);
+                calculate_forces(p[1], p[1], p[2], particles_per_process, particles_per_process, particles_per_process, round, rank);
+                calculate_forces(p[0], p[0], p[2], particles_per_process, particles_per_process, particles_per_process, round, rank);
             }
 
             if (j == numProcesses - 3) {
-                calculate_forces(p[0], p[1], p[1], particles_per_process, particles_per_process, particles_per_process, round);
+                calculate_forces(p[0], p[1], p[1], particles_per_process, particles_per_process, particles_per_process, round, rank);
             }
-            calculate_forces(p[0], p[1], p[2], particles_per_process, particles_per_process, particles_per_process, round);
+            calculate_forces(p[0], p[1], p[2], particles_per_process, particles_per_process, particles_per_process, round, rank);
         }
+        buffer_from_particles(b[0], p[0], particles_per_process, size_of_particle);
+        buffer_from_particles(b[1], p[1], particles_per_process, size_of_particle);
+        buffer_from_particles(b[2], p[2], particles_per_process, size_of_particle);
         buf_index = (buf_index + 1) % 3;
     }
 
@@ -366,7 +449,7 @@ void calculate_interactions(double *b0, double *b1, double *b2, int buffer_size,
         buffer_to_rank[buf_index] = prev_rank(buffer_to_rank[buf_index], numProcesses);
 
         if ((rank / (numProcesses / 3)) == 0) {
-            calculate_forces(p[0], p[1], p[2], particles_per_process, particles_per_process, particles_per_process, round);
+            calculate_forces(p[0], p[1], p[2], particles_per_process, particles_per_process, particles_per_process, round, rank);
         }
     }
 
@@ -391,11 +474,12 @@ void calculate_interactions(double *b0, double *b1, double *b2, int buffer_size,
         b[1][index_of_a_z] += b[0][index_of_a_z] + b[2][index_of_a_z]; // a_z
     }
 
-    // update positions
-    populate(p[0], b[1]);
+    // update positions after acceleration sum
+    buffer_to_particles(b[1], p[1], particles_per_process, size_of_particle);
+//    buffer_from_particles(b[1], p[1], particles_per_process, size_of_particle);
 
     if (round == 0) {
-        Particle *par = p[0];
+        Particle *par = p[1];
         for (int i = 0; i < particles_per_process; i++) {
             Particle ptc = par[i];
             ptc.x = coordinate_change(ptc.x, ptc.vel_x, ptc.a_x, time);
@@ -404,7 +488,7 @@ void calculate_interactions(double *b0, double *b1, double *b2, int buffer_size,
             par[i] = ptc;
         }
     } else {
-        Particle *par = p[0];
+        Particle *par = p[1];
         for (int i = 0; i < particles_per_process; i++) {
             Particle ptc = par[i];
             ptc.vel_x = velocity_change(ptc.vel_x, ptc.a_x, ptc.delta_a_x, time);
@@ -414,7 +498,9 @@ void calculate_interactions(double *b0, double *b1, double *b2, int buffer_size,
         }
     }
 
-    buffer_from_particles(b[1], p[0], particles_per_process, size_of_particle);
+    free(triples);
+
+    buffer_from_particles(b[1], p[1], particles_per_process, size_of_particle);
 }
 
 void output_to_file(char * path, double *values, int size, int particle_size) {
@@ -427,7 +513,7 @@ void output_to_file(char * path, double *values, int size, int particle_size) {
 
     for (int i = 0; i < size; i += particle_size) {
         for (int j = 0; j < 6; j++)
-            fprintf(f, "%0.10lf ", values[i * particle_size + j]);
+            fprintf(f, "%0.15lf ", values[i * particle_size + j]);
         fprintf(f, "\n");
     }
 
