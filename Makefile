@@ -5,11 +5,14 @@ EXEC=mpiexec
 build: main.c
 	$(CC) -o3 $(CFLAGS) body3 main.c
 
-buildlocal: main.c
+local: main.c
 	mpicc $(CFLAGS) body3 main.c
 
-clean:
+clean: cleanOutput
 	rm body3
 
-execute: buildlocal
-	$(EXEC) -n 4 ./body3 ./input.txt ./particles_out 5 0.5 -v
+cleanOutput: 
+	rm particles_out*.txt
+
+run: local
+	$(EXEC) -n 4 ./body3 ./input.txt ./particles_out 1 0.5 -v
