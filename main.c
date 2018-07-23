@@ -28,7 +28,7 @@ typedef struct Particle Particle;
 // Formula constants
 const double e = 4.69041575982343e-08;
 const double min_x = 10e-10;
-const double E = 1.0;
+const double E = -1.0;
 
 void populate(Particle* p, double* vals) {
     p->x = vals[0];
@@ -125,13 +125,13 @@ double axilrod_teller_potential(double r1, double r2, double r3)
         r3 = min_x;
     }
 
-    double p_r1 = pow(r1, 2);
-    double p_r2 = pow(r2, 2);
-    double p_r3 = pow(r3, 2);
+    double p_r1 = pow(r1, 2.0);
+    double p_r2 = pow(r2, 2.0);
+    double p_r3 = pow(r3, 2.0);
 
-    double a = 1 / pow(r1 * r2 * r3, 3);
-    double b = 3 * (-1 * p_r1 + p_r2 + p_r3) * (p_r1 - p_r2 + p_r3) * (p_r1 + p_r2 - p_r3);
-    double c = 8 * pow(r1 * r2 * r3, 5);
+    double a = 1.0 / pow(r1 * r2 * r3, 3.0);
+    double b = 3.0 * (-1.0 * p_r1 + p_r2 + p_r3) * (p_r1 - p_r2 + p_r3) * (p_r1 + p_r2 - p_r3);
+    double c = 8.0 * pow(r1 * r2 * r3, 5.0);
 
     return E * (a + b / c);
 }
@@ -145,7 +145,7 @@ double axilrod_teller_potential_particles(Particle p1, Particle p2, Particle p3)
     double r2 = distance_between(p1, p3);
     double r3 = distance_between(p2, p3);
 
-    return fabs(axilrod_teller_potential(r1, r2, r3));
+    return axilrod_teller_potential(r1, r2, r3);
 }
 
 double axilrod_teller_potential_derivative_x(Particle p1, Particle p2, Particle p3) {
@@ -304,57 +304,55 @@ void shift_right(Particle *new_particles, Particle *particles, int count, int ra
         MPI_Recv(new_particles, count, MPI_PARTICLE, prev_rank(rank, num_proc), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         MPI_Send(particles, count, MPI_PARTICLE, next_rank(rank, num_proc), 0, MPI_COMM_WORLD);
     }
-
     MPI_Barrier(MPI_COMM_WORLD);
     memcpy(particles, new_particles, sizeof(Particle) * count);
 }
 
-void print_buffer(double *buffer, int size) {
-    for (int i = 0; i < size; i++) {
-        printf("buffer value = %f\n", buffer[i]);
+void sum_accelerations_and_change_coordinate(Particle* p0, Particle* p1, Particle* p2, int particles_per_process, double time) {
+    for (int i = 0; i < particles_per_process; i++) {
+        Particle ptc = p1[i];
+        // sum accelerations for particles
+        ptc.a_x += p0[i].a_x + p2[i].a_x;
+        ptc.a_y += p0[i].a_y + p2[i].a_y;
+        ptc.a_z += p0[i].a_z + p2[i].a_z;
+        ptc.a_x *= 2;
+        ptc.a_y *= 2;
+        ptc.a_z *= 2;
+        // update positions after acceleration sum
+        ptc.x = coordinate_change(ptc.x, ptc.vel_x, ptc.a_x, time);
+        ptc.y = coordinate_change(ptc.y, ptc.vel_y, ptc.a_y, time);
+        ptc.z = coordinate_change(ptc.z, ptc.vel_z, ptc.a_z, time);
+        p1[i] = ptc;
     }
 }
 
-void buffer_to_particles(double *buffer, Particle *particles, int buffer_size, int particle_size) {
-    double values[particle_size];
-    for (int i = 0; i < buffer_size; i++) {
-        for (int j = 0; j < particle_size; j++) {
-            values[j] = buffer[i * particle_size + j];
-        }
-        Particle p;
-        populate(&p, values);
-        particles[i] = p;
+void sum_accelerations_and_change_velocity(Particle* p0, Particle* p1, Particle* p2, int particles_per_process, double time) {
+    for (int i = 0; i < particles_per_process; i++) {
+        Particle ptc = p1[i];
+        ptc.delta_a_x += p0[i].delta_a_x + p2[i].delta_a_x;
+        ptc.delta_a_y += p0[i].delta_a_y + p2[i].delta_a_y;
+        ptc.delta_a_z += p0[i].delta_a_z + p2[i].delta_a_z;
+        ptc.delta_a_x *= 2;
+        ptc.delta_a_y *= 2;
+        ptc.delta_a_z *= 2;
+        // update velocities after acceleration sum
+        ptc.vel_x = velocity_change(ptc.vel_x, ptc.a_x, ptc.delta_a_x, time);
+        ptc.vel_y = velocity_change(ptc.vel_y, ptc.a_y, ptc.delta_a_y, time);
+        ptc.vel_z = velocity_change(ptc.vel_z, ptc.a_z, ptc.delta_a_z, time);
+        p1[i] = ptc;
     }
 }
-
-void buffer_from_particles(double *buffer, Particle *particles, int particle_cnt, int size_of_particle) {
-    int index = 0;
-    double message[size_of_particle];
-
-    // populate buffer with particles
-    for (int i = 0; i < particle_cnt; i++) {
-        toArray(particles[i], message);
-        for (int j = 0; j < size_of_particle; j++) {
-            buffer[index * size_of_particle + j] = message[j];
-        }
-        index++;
-    }
-}
-
 // 3 body interaction algorithm
 void calculate_interactions(Particle *p0, Particle *p1, Particle *p2, int particles_per_process, int numProcesses, int rank, double time, int round)
 {
     Particle *p[3] = {p0, p1, p2};
     int buf_index = 0;
-
     MPI_Datatype MPI_PARTICLE = createParticleDataType();
     MPI_Type_commit(&MPI_PARTICLE);
-
-    // buffer to process mapping, so it can be used later to send buffers to original processes
-    int buffer_to_rank[3] = { prev_rank(rank, numProcesses), rank, next_rank(rank, numProcesses) };
     int my_buffer_location = rank;
     Particle new_p[particles_per_process];
-    int current_check_index = 0;
+    // buffer to process mapping, so it can be used later to send buffers to original processes
+    int buffer_to_rank[3] = { prev_rank(rank, numProcesses), rank, next_rank(rank, numProcesses) };
 
     for (int i = numProcesses - 3; i > 0; i -= 3) {
         for (int j = 0; j < i; j++) {
@@ -394,48 +392,17 @@ void calculate_interactions(Particle *p0, Particle *p1, Particle *p2, int partic
     }
 
     MPI_Request request = MPI_REQUEST_NULL;
-
+    // receive copies of particles
     for (int i = 0; i < 3; i++) {
         MPI_Isend(p[i], particles_per_process, MPI_PARTICLE, buffer_to_rank[i], 0, MPI_COMM_WORLD, &request);
         MPI_Recv(new_p, particles_per_process, MPI_PARTICLE, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         memcpy(p[i], new_p, sizeof(Particle) * particles_per_process);
     }
 
-    // sum accelerations for particles
-
-
-    // update positions after acceleration sum
     if (round == 0) {
-        Particle *par = p[1];
-        for (int i = 0; i < particles_per_process; i++) {
-            Particle ptc = par[i];
-            ptc.a_x += p[0][i].a_x + p[2][i].a_x;
-            ptc.a_y += p[0][i].a_y + p[2][i].a_y;
-            ptc.a_z += p[0][i].a_z + p[2][i].a_z;
-            ptc.a_x *= 2;
-            ptc.a_y *= 2;
-            ptc.a_z *= 2;
-            ptc.x = coordinate_change(ptc.x, ptc.vel_x, ptc.a_x, time);
-            ptc.y = coordinate_change(ptc.y, ptc.vel_y, ptc.a_y, time);
-            ptc.z = coordinate_change(ptc.z, ptc.vel_z, ptc.a_z, time);
-            par[i] = ptc;
-        }
+        sum_accelerations_and_change_coordinate(p[0], p[1], p[2], particles_per_process, time);
     } else {
-        Particle *par = p[1];
-        for (int i = 0; i < particles_per_process; i++) {
-            Particle ptc = par[i];
-            ptc.delta_a_x += p[0][i].delta_a_x + p[2][i].delta_a_x;
-            ptc.delta_a_y += p[0][i].delta_a_y + p[2][i].delta_a_y;
-            ptc.delta_a_z += p[0][i].delta_a_z + p[2][i].delta_a_z;
-            ptc.delta_a_x *= 2;
-            ptc.delta_a_y *= 2;
-            ptc.delta_a_z *= 2;
-            printf("ax = %.15f ay = %.15f az = %.15f in rank %d\n", p[1][i].a_x, p[1][i].a_y, p[1][i].a_z, rank);
-            ptc.vel_x = velocity_change(ptc.vel_x, ptc.a_x, ptc.delta_a_x, time);
-            ptc.vel_y = velocity_change(ptc.vel_y, ptc.a_y, ptc.delta_a_y, time);
-            ptc.vel_z = velocity_change(ptc.vel_z, ptc.a_z, ptc.delta_a_z, time);
-            par[i] = ptc;
-        }
+        sum_accelerations_and_change_velocity(p[0], p[1], p[2], particles_per_process, time);
     }
 }
 
@@ -492,12 +459,9 @@ int main(int argc, char *argv[])
     }
 
     int numProcesses, myRank;
-    double *buffer;
-    int size_of_particle = PARTICLE_SIZE;
     int particles_per_process = 0;
     int particle_cnt = 0;
-    int buffer_size = 0;
-    Particle *particles;
+    Particle *particles = NULL;
 
     MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &numProcesses);
@@ -512,7 +476,6 @@ int main(int argc, char *argv[])
     MPI_Bcast(&particle_cnt, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
     particles_per_process = particle_cnt / numProcesses;
-    buffer_size = size_of_particle * particles_per_process;
 
     // create MPI_PARTICLE type
     MPI_Datatype MPI_PARTICLE = createParticleDataType();
@@ -522,41 +485,14 @@ int main(int argc, char *argv[])
     Particle *p1 = malloc(sizeof(Particle) * particle_cnt);
     Particle *p2 = malloc(sizeof(Particle) * particle_cnt);
 
-    Particle p_1, p_2, p_3, p_4;
-
-    p_1 = particles[0];
-    p_2 = particles[1];
-    p_3 = particles[2];
-    p_4 = particles[3];
-
-    p_1.a_x = 2 * (axilrod_teller_potential_derivative_x(p_1, p_2, p_3) + axilrod_teller_potential_derivative_x(p_1, p_3, p_4) + axilrod_teller_potential_derivative_x(p_1, p_2, p_4));
-    p_1.a_y = 2 * (axilrod_teller_potential_derivative_y(p_1, p_2, p_3) + axilrod_teller_potential_derivative_y(p_1, p_3, p_4) + axilrod_teller_potential_derivative_y(p_1, p_2, p_4));
-    p_1.a_z = 2 * (axilrod_teller_potential_derivative_z(p_1, p_2, p_3) + axilrod_teller_potential_derivative_z(p_1, p_3, p_4) + axilrod_teller_potential_derivative_z(p_1, p_2, p_4));
-
-    p_1.x = coordinate_change(p_1.x, p_1.vel_x, p_1.a_x, time_interval);
-    p_1.y = coordinate_change(p_1.y, p_1.vel_y, p_1.a_y, time_interval);
-    p_1.z = coordinate_change(p_1.z, p_1.vel_z, p_1.a_z, time_interval);
-
-    p_1.delta_a_x = 2 * (axilrod_teller_potential_derivative_x(p_1, p_2, p_3) + axilrod_teller_potential_derivative_x(p_1, p_3, p_4) + axilrod_teller_potential_derivative_x(p_1, p_2, p_4));
-    p_1.delta_a_y = 2 * (axilrod_teller_potential_derivative_y(p_1, p_2, p_3) + axilrod_teller_potential_derivative_y(p_1, p_3, p_4) + axilrod_teller_potential_derivative_y(p_1, p_2, p_4));
-    p_1.delta_a_z = 2 * (axilrod_teller_potential_derivative_z(p_1, p_2, p_3) + axilrod_teller_potential_derivative_z(p_1, p_3, p_4) + axilrod_teller_potential_derivative_z(p_1, p_2, p_4));
-
-    p_1.vel_x = velocity_change(p_1.vel_x, p_1.a_x, p_1.delta_a_x, time_interval);
-    p_1.vel_y = velocity_change(p_1.vel_y, p_1.a_y, p_1.delta_a_y, time_interval);
-    p_1.vel_z = velocity_change(p_1.vel_z, p_1.a_z, p_1.delta_a_z, time_interval);
-
-    printf(">>>>>> %.15f, %.15f <<<<<<<<\n", p_1.x, p_1.vel_x);
-
     // scatter particles to processes
     MPI_Scatter(particles, particles_per_process, MPI_PARTICLE, p1, particles_per_process, MPI_PARTICLE, 0, MPI_COMM_WORLD);
-
     int step = 0;
     while (step < step_count) {
 
         for (int i = 0; i < 2; i++) {
             // for i = 0 update coordinates
             // for i = 1 update velocities
-
             MPI_Barrier(MPI_COMM_WORLD);
             // send buffer to neighbors
             if (myRank % 2 == 0) {
@@ -585,25 +521,21 @@ int main(int argc, char *argv[])
         }
     }
 
-    // does not work correctly, only b1 from rank 0 is gathered, the rest are zeros
-    MPI_Gather(p1, particles_per_process, MPI_PARTICLE, particles, particle_cnt, MPI_PARTICLE, 0, MPI_COMM_WORLD);
+    // does not work correctly, only p1 from rank 0 is gathered, the rest are zeros
+    MPI_Gather(p1, particles_per_process, MPI_PARTICLE, particles, particles_per_process, MPI_PARTICLE, 0, MPI_COMM_WORLD);
 
     if (myRank == 0) {
         strcat(output_file, "_stepcount.txt");
         output_to_file(output_file, particles, particle_cnt);
-    }
-
-    if (myRank == 0) {
-        free(buffer);
+        free(particles);
     }
 
     free(p0);
     free(p1);
     free(p2);
 
-    printf("finalize in rank %d\n", myRank);
+    printf("Computation complete in rank %d\n", myRank);
     fflush(stdout);
-
     MPI_Finalize();
 
     return 0;
