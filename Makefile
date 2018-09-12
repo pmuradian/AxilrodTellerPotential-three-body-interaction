@@ -15,4 +15,4 @@ cleanOutput:
 	rm particles_out*.txt
 
 run: local
-	$(EXEC) -n 4 ./body3 ./input.txt ./particles_out 1 0.5 -v
+	$(EXEC) -n 4 ./body3 ./input.txt ./particles_out 5 0.5 -v

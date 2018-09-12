@@ -1,3 +1,4 @@
+
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -28,7 +29,7 @@ typedef struct Particle Particle;
 // Formula constants
 const double e = 4.69041575982343e-08;
 const double min_x = 10e-10;
-const double E = -1.0;
+const double E = 1.0;
 
 void populate(Particle* p, double* vals) {
     p->x = vals[0];
@@ -182,11 +183,31 @@ double axilrod_teller_potential_derivative_z(Particle p1, Particle p2, Particle 
 }
 
 double coordinate_change(double axis, double vel, double a, double t) {
-    return axis + vel * t + (a * t * t) / 2;
+    return axis + vel * t - (a * t * t) / 2;
 }
 
 double velocity_change(double vel, double a, double d_a, double t) {
-    return vel + ((a + d_a) * t) / 2;
+    return vel - ((a + d_a) * t) / 2;
+}
+
+// particles p2 and p3 are fixed and p1 is moved around
+void calculate_acceleration_for_particles(Particle *p1, Particle *p2, Particle *p3) {
+    p1->a_x += axilrod_teller_potential_derivative_x(*p1, *p2, *p3);
+    p1->a_y += axilrod_teller_potential_derivative_y(*p1, *p2, *p3);
+    p1->a_z += axilrod_teller_potential_derivative_z(*p1, *p2, *p3);
+    p1->a_x += axilrod_teller_potential_derivative_x(*p1, *p3, *p2);
+    p1->a_y += axilrod_teller_potential_derivative_y(*p1, *p3, *p2);
+    p1->a_z += axilrod_teller_potential_derivative_z(*p1, *p3, *p2);
+}
+
+// particles p2 and p3 are fixed and p1 is moved around
+void calculate_delta_acceleration_for_particles(Particle *p1, Particle *p2, Particle *p3) {
+    p1->delta_a_x += axilrod_teller_potential_derivative_x(*p1, *p2, *p3);
+    p1->delta_a_y += axilrod_teller_potential_derivative_y(*p1, *p2, *p3);
+    p1->delta_a_z += axilrod_teller_potential_derivative_z(*p1, *p2, *p3);
+    p1->delta_a_x += axilrod_teller_potential_derivative_x(*p1, *p3, *p2);
+    p1->delta_a_y += axilrod_teller_potential_derivative_y(*p1, *p3, *p2);
+    p1->delta_a_z += axilrod_teller_potential_derivative_z(*p1, *p3, *p2);
 }
 
 void calculate_forces(Particle *p_0, Particle *p_1, Particle *p_2, int p0_size, int p1_size, int p2_size, int round, int rank)
@@ -206,29 +227,13 @@ void calculate_forces(Particle *p_0, Particle *p_1, Particle *p_2, int p0_size, 
                 }
 
                 if (round == 0) {
-                    p1.a_x += axilrod_teller_potential_derivative_x(p1, p2, p3);
-                    p1.a_y += axilrod_teller_potential_derivative_y(p1, p2, p3);
-                    p1.a_z += axilrod_teller_potential_derivative_z(p1, p2, p3);
-
-                    p2.a_x += axilrod_teller_potential_derivative_x(p2, p1, p3);
-                    p2.a_y += axilrod_teller_potential_derivative_y(p2, p1, p3);
-                    p2.a_z += axilrod_teller_potential_derivative_z(p2, p1, p3);
-
-                    p3.a_x += axilrod_teller_potential_derivative_x(p3, p2, p1);
-                    p3.a_y += axilrod_teller_potential_derivative_y(p3, p2, p1);
-                    p3.a_z += axilrod_teller_potential_derivative_z(p3, p2, p1);
+                    calculate_acceleration_for_particles(&p1, &p2, &p3);
+                    calculate_acceleration_for_particles(&p2, &p1, &p3);
+                    calculate_acceleration_for_particles(&p3, &p2, &p1);
                 } else {
-                    p1.delta_a_x += axilrod_teller_potential_derivative_x(p1, p2, p3);
-                    p1.delta_a_y += axilrod_teller_potential_derivative_y(p1, p2, p3);
-                    p1.delta_a_y += axilrod_teller_potential_derivative_z(p1, p2, p3);
-
-                    p2.delta_a_x += axilrod_teller_potential_derivative_x(p2, p1, p3);
-                    p2.delta_a_y += axilrod_teller_potential_derivative_y(p2, p1, p3);
-                    p2.delta_a_y += axilrod_teller_potential_derivative_z(p2, p1, p3);
-
-                    p3.delta_a_x += axilrod_teller_potential_derivative_x(p3, p2, p1);
-                    p3.delta_a_y += axilrod_teller_potential_derivative_y(p3, p2, p1);
-                    p3.delta_a_y += axilrod_teller_potential_derivative_z(p3, p2, p1);
+                    calculate_delta_acceleration_for_particles(&p1, &p2, &p3);
+                    calculate_delta_acceleration_for_particles(&p2, &p1, &p3);
+                    calculate_delta_acceleration_for_particles(&p3, &p2, &p1);
                 }
                 must_update = 1;
                 if (must_update) {
@@ -315,9 +320,6 @@ void sum_accelerations_and_change_coordinate(Particle* p0, Particle* p1, Particl
         ptc.a_x += p0[i].a_x + p2[i].a_x;
         ptc.a_y += p0[i].a_y + p2[i].a_y;
         ptc.a_z += p0[i].a_z + p2[i].a_z;
-        ptc.a_x *= 2;
-        ptc.a_y *= 2;
-        ptc.a_z *= 2;
         // update positions after acceleration sum
         ptc.x = coordinate_change(ptc.x, ptc.vel_x, ptc.a_x, time);
         ptc.y = coordinate_change(ptc.y, ptc.vel_y, ptc.a_y, time);
@@ -332,9 +334,6 @@ void sum_accelerations_and_change_velocity(Particle* p0, Particle* p1, Particle*
         ptc.delta_a_x += p0[i].delta_a_x + p2[i].delta_a_x;
         ptc.delta_a_y += p0[i].delta_a_y + p2[i].delta_a_y;
         ptc.delta_a_z += p0[i].delta_a_z + p2[i].delta_a_z;
-        ptc.delta_a_x *= 2;
-        ptc.delta_a_y *= 2;
-        ptc.delta_a_z *= 2;
         // update velocities after acceleration sum
         ptc.vel_x = velocity_change(ptc.vel_x, ptc.a_x, ptc.delta_a_x, time);
         ptc.vel_y = velocity_change(ptc.vel_y, ptc.a_y, ptc.delta_a_y, time);
@@ -408,7 +407,7 @@ void calculate_interactions(Particle *p0, Particle *p1, Particle *p2, int partic
 
 void output_to_file(char * path, Particle *particle, int count) {
     FILE *f;
-    if ((f = fopen(path, "w")) == NULL) {
+    if ((f = fopen(path, "a")) == NULL) {
         perror("File cannot be opened");
         exit(1);
     }
@@ -424,16 +423,50 @@ void output_to_file(char * path, Particle *particle, int count) {
     fclose(f);
 }
 
-void temp_file_name(char *final, char *original, int rank, int step) {
-    strcpy(final, original);
-    strcat(final, "_step_");
-    char integer_string[32];
-    sprintf(integer_string, "%d", step);
-    strcat(final, integer_string);
-    strcat(final, "_rank_");
-    sprintf(integer_string, "%d", rank);
-    strcat(final, integer_string);
-    strcat(final, ".txt");
+void cleanFile(char *path) {
+    FILE *f;
+    if ((f = fopen(path, "w")) == NULL) {
+        perror("File cannot be opened");
+        exit(1);
+    }
+    fprintf(f, "");
+    fclose(f);
+}
+
+void gather_and_write(Particle *p, int particleCount, char *outputFile, int stepCount, int numProcesses, int myRank) {
+    
+    MPI_Datatype MPI_PARTICLE = createParticleDataType();
+    MPI_Type_commit(&MPI_PARTICLE);
+
+    char copyPath[100];
+    strcpy(copyPath, outputFile);
+
+    if (myRank == 0) {
+        char integer_string[32];
+        sprintf(integer_string, "_%d.txt", stepCount);
+        strcat(copyPath, integer_string);
+        cleanFile(copyPath);
+        output_to_file(copyPath, p, particleCount);
+        Particle *temp = malloc(sizeof(Particle) * particleCount);
+        for (int i = 1; i < numProcesses; i++) {
+            MPI_Recv(temp, particleCount, MPI_PARTICLE, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            output_to_file(copyPath, temp, particleCount);
+        }
+        free(temp);
+    } else {
+        // send particles after each other to prevent locking situations
+        if (myRank == 1) {
+            MPI_Send(p, particleCount, MPI_PARTICLE, 0, 0, MPI_COMM_WORLD);
+        } else {
+            int temp_num = 0;
+            MPI_Recv(&temp_num, 1, MPI_INT, myRank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Send(p, particleCount, MPI_PARTICLE, 0, 0, MPI_COMM_WORLD);
+        }
+        if (myRank != numProcesses - 1) {
+            int num = 0;
+            MPI_Send(&num, 1, MPI_INT, myRank + 1, 0, MPI_COMM_WORLD);
+        }
+    }
 }
 
 int main(int argc, char *argv[])
@@ -481,9 +514,9 @@ int main(int argc, char *argv[])
     MPI_Datatype MPI_PARTICLE = createParticleDataType();
     MPI_Type_commit(&MPI_PARTICLE);
 
-    Particle *p0 = malloc(sizeof(Particle) * particle_cnt);
-    Particle *p1 = malloc(sizeof(Particle) * particle_cnt);
-    Particle *p2 = malloc(sizeof(Particle) * particle_cnt);
+    Particle *p0 = malloc(sizeof(Particle) * particles_per_process);
+    Particle *p1 = malloc(sizeof(Particle) * particles_per_process);
+    Particle *p2 = malloc(sizeof(Particle) * particles_per_process);
 
     // scatter particles to processes
     MPI_Scatter(particles, particles_per_process, MPI_PARTICLE, p1, particles_per_process, MPI_PARTICLE, 0, MPI_COMM_WORLD);
@@ -513,22 +546,16 @@ int main(int argc, char *argv[])
         }
         step++;
 
-        if (verbose) {
-            // create local output filename
-            char tmp[80];
-            temp_file_name(tmp, output_file, myRank, step);
-            output_to_file(tmp, p1, particles_per_process);
-        }
+        // gather particles and write to file
+        if (verbose)
+            gather_and_write(p1, particles_per_process, output_file, step, numProcesses, myRank);
     }
 
-    // does not work correctly, only p1 from rank 0 is gathered, the rest are zeros
-    MPI_Gather(p1, particles_per_process, MPI_PARTICLE, particles, particles_per_process, MPI_PARTICLE, 0, MPI_COMM_WORLD);
+    if (!verbose)
+        gather_and_write(p1, particles_per_process, output_file, step, numProcesses, myRank);
 
-    if (myRank == 0) {
-        strcat(output_file, "_stepcount.txt");
-        output_to_file(output_file, particles, particle_cnt);
+    if (myRank == 0)
         free(particles);
-    }
 
     free(p0);
     free(p1);
